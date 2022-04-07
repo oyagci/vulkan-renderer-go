@@ -27,6 +27,7 @@ func NewRenderer() (*Renderer, error) {
 	vk.SetGetInstanceProcAddr(glfw.GetVulkanGetInstanceProcAddress())
 
 	if err := vk.Init(); err != nil {
+		window.Destroy()
 		glfw.Terminate()
 		return nil, err
 	}
@@ -57,7 +58,15 @@ func NewRenderer() (*Renderer, error) {
 	res := vk.CreateInstance(&createInfo, nil, &instance)
 
 	if res != vk.Success {
+		window.Destroy()
 		return nil, vk.Error(res)
+	}
+
+	if err = checkExtensions(glfwExtensions); err != nil {
+		vk.DestroyInstance(instance, nil)
+		window.Destroy()
+		glfw.Terminate()
+		return nil, err
 	}
 
 	r := Renderer{
@@ -72,4 +81,40 @@ func (renderer Renderer) Delete() {
 	vk.DestroyInstance(renderer.vkInstance, nil)
 	renderer.glfwWindow.Destroy()
 	glfw.Terminate()
+}
+
+func checkExtensions(availableExts []string) error {
+
+	extMap := map[string]struct{}{}
+	for _, ext := range availableExts {
+		extMap[ext] = struct{}{}
+	}
+
+	var extensionCount uint32 = 0
+	vk.EnumerateInstanceExtensionProperties("", &extensionCount, nil)
+
+	var extensions []vk.ExtensionProperties = make([]vk.ExtensionProperties, extensionCount)
+	res := vk.EnumerateInstanceExtensionProperties("", &extensionCount, extensions)
+
+	if res != vk.Success {
+		return vk.Error(res)
+	}
+
+	allPresent := true
+	extName := ""
+
+	for _, ext := range extensions {
+		ext.Deref()
+		if _, ok := extMap[string(C.GoString(ext.ExtensionName[:]))]; !ok {
+			allPresent = false
+			extName = string(ext.ExtensionName[:])
+			break
+		}
+	}
+
+	if !allPresent {
+		panic(extName)
+	}
+
+	return nil
 }
