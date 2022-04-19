@@ -1,9 +1,45 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
+	"unsafe"
+
 	"github.com/go-gl/glfw/v3.3/glfw"
 	vk "github.com/vulkan-go/vulkan"
 )
+
+type DebugUtilsMessengerCallbackDataFlags uint32
+
+type DebugUtilsMessengerCallbackData struct {
+	SType            vk.StructureType
+	PNext            unsafe.Pointer
+	Flags            DebugUtilsMessengerCallbackDataFlags
+	PMessageIdName   string
+	MessageIdNumber  int32
+	PMessage         string
+	QueueLabelCount  uint32
+	PQueueLabels     []vk.DebugUtilsLabel
+	CmdBufLabelCount uint32
+	PCmdBufLabels    []vk.DebugUtilsLabel
+	ObjectCount      uint32
+	PObject          vk.DebugUtilsObjectNameInfo
+}
+
+type DebugUtilsMessengerCreateFlags uint32
+type DebugUtilsMessengerCallback func(messageSeverity vk.DebugUtilsMessageSeverityFlagBits, messageTypes vk.DebugUtilsMessageTypeFlags, pCallbackData DebugUtilsMessengerCallbackData, pUserData unsafe.Pointer) vk.Result
+
+type DebugUtilsMessengerCreateInfo struct {
+	SType           vk.StructureType
+	PNext           unsafe.Pointer
+	Flags           DebugUtilsMessengerCreateFlags
+	MessageSeverity vk.DebugUtilsMessageSeverityFlags
+	MessageType     vk.DebugUtilsMessageTypeFlags
+	PfnUserCallback DebugUtilsMessengerCallback
+	PUserData       unsafe.Pointer
+}
+
+type DebugUtilsMessenger uint64
 
 type Renderer struct {
 	glfwWindow *glfw.Window
@@ -44,15 +80,23 @@ func NewRenderer() (*Renderer, error) {
 
 	glfwExtensions := glfw.GetCurrentContext().GetRequiredInstanceExtensions()
 
+	extensions := glfwExtensions
+	extensions = append(extensions, vk.ExtDebugUtilsExtensionName+"\x00")
+
 	createInfo := vk.InstanceCreateInfo{
 		SType:                   vk.StructureTypeInstanceCreateInfo,
 		PNext:                   nil,
 		PApplicationInfo:        &appInfo,
 		Flags:                   0,
-		EnabledExtensionCount:   uint32(len(glfwExtensions)),
-		PpEnabledExtensionNames: glfwExtensions,
+		EnabledExtensionCount:   uint32(len(extensions)),
+		PpEnabledExtensionNames: extensions,
 		EnabledLayerCount:       0,
 	}
+
+	validationLayers := getValidationLayers()
+
+	createInfo.EnabledLayerCount = uint32(len(validationLayers))
+	createInfo.PpEnabledLayerNames = validationLayers
 
 	var instance vk.Instance = nil
 	res := vk.CreateInstance(&createInfo, nil, &instance)
@@ -60,13 +104,6 @@ func NewRenderer() (*Renderer, error) {
 	if res != vk.Success {
 		window.Destroy()
 		return nil, vk.Error(res)
-	}
-
-	if err = checkExtensions(glfwExtensions); err != nil {
-		vk.DestroyInstance(instance, nil)
-		window.Destroy()
-		glfw.Terminate()
-		return nil, err
 	}
 
 	r := Renderer{
@@ -83,38 +120,73 @@ func (renderer Renderer) Delete() {
 	glfw.Terminate()
 }
 
-func checkExtensions(availableExts []string) error {
+func getValidationLayers() []string {
 
-	extMap := map[string]struct{}{}
-	for _, ext := range availableExts {
-		extMap[ext] = struct{}{}
+	validationLayers := []string{
+		"VK_LAYER_KHRONOS_validation\x00",
 	}
 
-	var extensionCount uint32 = 0
-	vk.EnumerateInstanceExtensionProperties("", &extensionCount, nil)
+	if checkValidationLayersSupport(validationLayers) {
+		return validationLayers
+	} else {
+		return []string{}
+	}
+}
 
-	var extensions []vk.ExtensionProperties = make([]vk.ExtensionProperties, extensionCount)
-	res := vk.EnumerateInstanceExtensionProperties("", &extensionCount, extensions)
+func checkValidationLayersSupport(neededLayers []string) bool {
+
+	layerMap := map[string]struct{}{}
+
+	var layerCount uint32 = 0
+	vk.EnumerateInstanceLayerProperties(&layerCount, nil)
+
+	var layers []vk.LayerProperties = make([]vk.LayerProperties, layerCount)
+	res := vk.EnumerateInstanceLayerProperties(&layerCount, layers)
+
+	for _, layer := range layers {
+		layer.Deref()
+		layerName := string(bytes.Trim(layer.LayerName[:], "\x00")) + "\x00"
+		layerMap[layerName] = struct{}{}
+	}
 
 	if res != vk.Success {
-		return vk.Error(res)
+		return false
 	}
 
 	allPresent := true
-	extName := ""
 
-	for _, ext := range extensions {
-		ext.Deref()
-		if _, ok := extMap[string(C.GoString(ext.ExtensionName[:]))]; !ok {
+	for _, ext := range neededLayers {
+		if _, ok := layerMap[ext]; !ok {
 			allPresent = false
-			extName = string(ext.ExtensionName[:])
+			fmt.Printf("Coult not find layer %v\n", ext)
 			break
+		} else {
+			fmt.Printf("Found layer %v\n", ext)
 		}
 	}
 
-	if !allPresent {
-		panic(extName)
+	return allPresent
+}
+
+func debugCallback(messageSeverity vk.DebugUtilsMessageSeverityFlagBits, messageTypes vk.DebugUtilsMessageTypeFlags, pCallbackData DebugUtilsMessengerCallbackData, pUserData unsafe.Pointer) vk.Result {
+	fmt.Println("msg")
+	return vk.False
+}
+
+func setupDebugMessenger(instance vk.Instance) {
+	var messenger DebugUtilsMessenger
+
+	createInfo := DebugUtilsMessengerCreateInfo{
+		SType:           vk.StructureTypeDebugUtilsMessengerCreateInfo,
+		PNext:           nil,
+		MessageSeverity: vk.DebugUtilsMessageSeverityFlags(vk.DebugUtilsMessageSeverityVerboseBit | vk.DebugUtilsMessageSeverityWarningBit | vk.DebugUtilsMessageSeverityErrorBit),
+		MessageType:     vk.DebugUtilsMessageTypeFlags(vk.DebugUtilsMessageTypeGeneralBit | vk.DebugUtilsMessageTypeValidationBit | vk.DebugUtilsMessageTypePerformanceBit),
+		PfnUserCallback: debugCallback,
+		PUserData:       nil,
 	}
 
-	return nil
+	createDebugUtilsMessengerProc := vk.GetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT")
+}
+
+func CreateDebugUtilsMessengerEXT(instance vk.Instance, const vk.DebugUtilsMess) {
 }
